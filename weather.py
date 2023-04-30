@@ -1,11 +1,18 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
-import copy, json,requests, pytz,time
+import json
 from inky.inky_uc8159 import Inky, DESATURATED_PALETTE
 from datetime import datetime
 from PIL import Image, ImageFont, ImageDraw
-import io, apikey, os,signal, iconmap
-import RPi.GPIO as GPIO
+import apikey, os
+import sys
+from dataclasses import dataclass
+from typing import List, Optional, Union, Type
+import cattrs
+import datetime
+from dataclasses import dataclass
+import math
+import requests
 
 path = os.path.dirname(os.path.realpath(__file__))
 
@@ -27,48 +34,75 @@ LABELS = ['A','B','C','D']
 
 time_colour = colours[4]
 
-class Day:
-    def __init__(self, min, max, pop, id, sunrise, sunset, pressure, dt):
-        self.min = int(min + 0.5)
-        self.max = int(max + 0.5)
-        self.pop = pop
-        self.id = id
-        self.sunrise = sunrise
-        self.sunset = sunset
-        self.pressure = pressure
-        self.dt = dt
+def serialize_datetime(dt):
+    return dt.isoformat()
+
+def deserialize_datetime(dt:Optional[Union[str,int]], target_type:Type[datetime.datetime]) -> Optional[datetime.datetime]:
+    if not dt:
+        return None
+    if type(dt) == 'str':
+        return datetime.datetime.fromisoformat(dt)
+    return datetime.datetime.fromtimestamp(dt)
+
+cattrs.register_structure_hook(datetime.datetime, deserialize_datetime)
+cattrs.register_unstructure_hook(datetime.datetime, serialize_datetime)
+
+@dataclass
+class DailyForecast:
+    time: datetime.datetime
+    icon: str
+    summary: str
+    sunriseTime: datetime.datetime
+    sunsetTime: datetime.datetime
+    moonPhase: float
+    precipIntensity: float
+    precipIntensityMax: float
+    precipIntensityMaxTime: datetime.datetime
+    precipProbability: float
+    precipAccumulation: float
+    precipType: str
+    temperatureHigh: float
+    temperatureHighTime: datetime.datetime
+    temperatureLow: float
+    temperatureLowTime: datetime.datetime
+    apparentTemperatureHigh: float
+    apparentTemperatureHighTime: datetime.datetime
+    apparentTemperatureLow: float
+    apparentTemperatureLowTime: datetime.datetime
+    dewPoint: float
+    humidity: float
+    pressure: float
+    windSpeed: float
+    windGust: float
+    windGustTime: datetime.datetime
+    windBearing: float
+    cloudCover: float
+    uvIndex: float
+    uvIndexTime: datetime.datetime
+    visibility: float
+    temperatureMin: float
+    temperatureMinTime: datetime.datetime
+    temperatureMax: float
+    temperatureMaxTime: datetime.datetime
+    apparentTemperatureMin: float
+    apparentTemperatureMinTime: datetime.datetime
+    apparentTemperatureMax: float
+    apparentTemperatureMaxTime: datetime.datetime
+
+@dataclass
+class ForecastData:
+    # current: CurrentWeather
+    daily: List[DailyForecast]=None
+    # hourly: List[HourlyForecast]
+    # minutely: List[MinutelyForecast]
+
 
 def get_icon(name):
     return Image.open(name).convert("RGBA")
 
-
-def day_lists_not_identical(days, other_days):
-    if (len(days) != len(other_days)):
-        return True
-    for i in range(len(days)):
-        if (days[i].min != other_days[i].min):
-            return True
-        if (days[i].max != other_days[i].max):
-            return True
-        if (days[i].pop != other_days[i].pop):
-            return True
-        if (days[i].id != other_days[i].id):
-            return True
-    return True
-
-
-api_key = apikey.api_key
-night_map = iconmap.night_map
-day_map = iconmap.day_map
-general_map = iconmap.general_map
-
-if (api_key == "<your API key>"):
-    print("You forgot to enter your API key")
-    exit()
-lat = apikey.lat
-lon = apikey.lon
-url = "https://api.openweathermap.org/data/2.5/onecall?lat=%s&lon=%s&exclude=hourly&appid=%s&units=metric" % (
-    lat, lon, api_key)
+if (apikey.api_key == "<your API key>"):
+    print("You forgot to enter your API key", file=sys.stderr)
+    sys.exit(1)
 
 palette_colors = [(c[0] / 255.0, c[1] / 255.0, c[2] / 255.0) for c in DESATURATED_PALETTE[2:6] + [(0, 0, 0)]]
 
@@ -77,91 +111,87 @@ for i in range(2):
     for j in range(4):
         tile_positions.append((j * TILE_WIDTH, i * TILE_HEIGHT))
 
-inky_display = Inky()
 satuation = 0
-
-
-y_top = int(inky_display.height)
-y_bottom = y_top + int(inky_display.height * (4.0 / 10.0))
 
 font = ImageFont.truetype(path+
     "/fonts/BungeeColor-Regular_colr_Windows.ttf", FONT_SIZE)
 
-old_days = []
+weather_icons = {
+    'clear-day': 'icons/wi-day-sunny.png',
+    'clear-night': 'icons/wi-night-clear.png',
+    'rain': 'icons/wi-rain.png',
+    'snow': 'icons/wi-snow.png',
+    'sleet': 'icons/wi-sleet.png',
+    'wind': 'icons/wi-windy.png',
+    'fog': 'icons/wi-fog.png',
+    'cloudy': 'icons/wi-cloudy.png',
+    'partly-cloudy-day': 'icons/wi-day-cloudy.png',
+    'partly-cloudy-night': 'icons/wi-night-alt-cloudy.png'
+}
 
-while(True):
-    try:
-        response = requests.get(url)
-        data = json.loads(response.text)
-    except:
-        None
+def fetch_forecast(api_key:str, lat:float, lon:float) -> ForecastData:
+    url = f"https://api.pirateweather.net/forecast/{apikey.api_key}/{apikey.lat},{apikey.lon}?units=us"
+    response = requests.get(url)
+    data = json.loads(response.text)
 
-    days = []
-    daily = data["daily"]
-    for day in daily:
-        min = day["temp"]["min"]
-        max = day["temp"]["max"]
-        pop = day["pop"]
-        id = day["weather"][0]["id"]
-        sunrise = int(day["sunrise"])
-        sunset = int(day["sunset"])
-        dt = int(day["dt"])
-        pressure = int(day["pressure"])
-        days.append(Day(min, max, pop, id, sunrise, sunset, pressure, dt))
+    ret = ForecastData()
+    ret.daily = [
+        cattrs.structure(day, DailyForecast)
+        for day in data['daily']['data']
+    ]
 
-    if (day_lists_not_identical(days, old_days)):
-        old_days = copy.deepcopy(days)
+    return ret
 
-        img = Image.new("RGBA", inky_display.resolution, colours[1])
-        draw = ImageDraw.Draw(img)
+def update(inky_display: Inky):
+    data = fetch_forecast(apikey.api_key, apikey.lat, apikey.lon)
 
-        for i in range(8):
-            name = path+"/icons/wi-"
-            if (i == 0):
-                t = int(time.time())
-                if (t < days[i].sunset):
-                    name += day_map[days[i].id]
-                else:
-                    name += night_map[days[i].id]
-            else:
-                name += general_map[days[i].id]
-            icon = get_icon(name)
-            x = tile_positions[i][0] + (TILE_WIDTH - ICON_SIZE) // 2
-            y = tile_positions[i][1]
-            img.paste(icon, (x, y))
-            text = str(int(100 * days[i].pop)) + "%"
-            w, h = font.getsize(text)
-            x = tile_positions[i][0] + (TILE_WIDTH - w) // 2
-            y = tile_positions[i][1] + ICON_SIZE + SPACE
-            draw.text((x, y), text, percipitation_colour, font)
-            text = str(days[i].min) + "°|" + str(days[i].max) + "°"
-            w, h = font.getsize(text)
-            x = tile_positions[i][0] + (TILE_WIDTH - w) // 2
-            y += FONT_SIZE
-            draw.text((x, y), text, temp_colour, font)
-            press = str(days[i].pressure)
-            text = str(press)+"hPa"
-            w, h = font.getsize(text)
-            x = tile_positions[i][0] + (TILE_WIDTH - w) // 2
-            y += FONT_SIZE
-            draw.text((x, y), text, presure_colour, font)
-            ts = time.gmtime(days[i].dt)
-            day_name = time.strftime("%a", ts)
-            text = day_name
-            w, h = font.getsize(text)
-            x = tile_positions[i][0] + (TILE_WIDTH - w) // 2
-            y += FONT_SIZE
-            draw.text((x, y), text, day_colour, font)
-            img.rotate(180)
-        if (SHOW_CLOCK == True):
-            now =  datetime.now()
-            current_time = now.strftime("%H:%M")
-            draw.text((245, 410), current_time, time_colour, font)
-        if (USE_INKY):
-            inky_display.set_border(colours[4])
-            inky_display.set_image(img.rotate(ROTATE), saturation=0)
-            inky_display.show()
-        else:
-            img.show()
+    img = Image.new("RGBA", inky_display.resolution, colours[1])
+    draw = ImageDraw.Draw(img)
+
+    for d,day in enumerate(data.daily[0:8]):
+        icon = Image.open(weather_icons[day.icon]).convert("RGBA")
+
+        x = tile_positions[d][0] + (TILE_WIDTH - ICON_SIZE) // 2
+        y = tile_positions[d][1]
+        img.paste(icon, (x, y))
+        text = str(int(100 * day.precipProbability)) + "%"
+        w, h = font.getsize(text)
+        x = tile_positions[d][0] + (TILE_WIDTH - w) // 2
+        y = tile_positions[d][1] + ICON_SIZE + SPACE
+        draw.text((x, y), text, percipitation_colour, font)
+        
+        text = str(int(math.floor(day.apparentTemperatureMin))) + "°|" + str(int(math.ceil(day.apparentTemperatureMax))) + "°"
+        w, h = font.getsize(text)
+        x = tile_positions[d][0] + (TILE_WIDTH - w) // 2
+        y += FONT_SIZE
+        draw.text((x, y), text, temp_colour, font)
+        press = str(int(day.pressure))
+        text = str(press)+"hPa"
+        w, h = font.getsize(text)
+        x = tile_positions[d][0] + (TILE_WIDTH - w) // 2
+        y += FONT_SIZE
+        draw.text((x, y), text, presure_colour, font)
+        ts = day.time
+        day_name = day.time.strftime("%a")
+        text = day_name
+        w, h = font.getsize(text)
+        x = tile_positions[d][0] + (TILE_WIDTH - w) // 2
+        y += FONT_SIZE
+        draw.text((x, y), text, day_colour, font)
+        img.rotate(180)
+
+    if (SHOW_CLOCK == True):
+        now =  datetime.now()
+        current_time = now.strftime("%H:%M")
+        draw.text((245, 410), current_time, time_colour, font)
+    if (USE_INKY):
+        inky_display.set_border(colours[4])
+        inky_display.set_image(img.rotate(ROTATE), saturation=0)
+        inky_display.show()
+    else:
+        img.show()
   
-    time.sleep(SLEEP_TIME)
+
+if __name__ == '__main__':
+    inky_display = Inky()
+    update(inky_display)

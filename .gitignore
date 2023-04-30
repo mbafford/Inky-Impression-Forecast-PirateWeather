@@ -3,3 +3,4 @@ __pycache__/
 icons/*.svg
 icons/*.PNG8
 apikey.py
+.env/

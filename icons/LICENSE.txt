@@ -1,1 +1,5 @@
-The icons are from https://github.com/erikflowers/weather-icons
+The icons are a subset of the icons from https://github.com/erikflowers/weather-icons
+
+Licensed under SIL OFL 1.1
+
+https://scripts.sil.org/cms/scripts/page.php?site_id=nrsi&id=OFL
